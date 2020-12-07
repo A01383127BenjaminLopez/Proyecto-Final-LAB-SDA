@@ -1,0 +1,233 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+
+-- Uncomment the following library declaration if using
+-- arithmetic functions with Signed or Unsigned values
+use IEEE.NUMERIC_STD.ALL;
+
+-- Uncomment the following library declaration if instantiating
+-- any Xilinx leaf cells in this code.
+--library UNISIM;
+--use UNISIM.VComponents.all;
+
+entity main is
+    Port (
+          clk          : in std_logic; --system clock
+          reset        : in std_logic; --LCD reset "dummy input" also used for ADC instantiation
+          updown       : in std_logic; --switch to choose whether to set the thup_in ('1') or thdwn_in ('0')
+          hum_in       : in std_logic; --Humidity sensor analog input 
+          th_set_but   : in std_logic; --Set button for the treshold value
+          th_set_swt   : in std_logic_Vector (9 downto 0); -- Treshold limit inputted by switches on the board
+          m_led_out    : out std_logic; --Output LED active when hum_in is below a thdown_in value, deactivated when hum_in passes thup_in value
+          rw, rs, e    : out std_logic; --LCD outputs "dummy outputs"
+          lcd_data     : out std_logic_vector (7 downto 0)); --LCD data bus
+end main;
+
+architecture Behavioral of main is
+
+--LCD signals
+SIGNAL lcd_enable    : STD_LOGIC;
+SIGNAL lcd_bus       : STD_LOGIC_VECTOR(9 DOWNTO 0);
+SIGNAL lcd_busy      : STD_LOGIC;
+
+--ADC signals
+SIGNAL channel_out   : std_logic_vector(4 downto 0);
+SIGNAL do_out        : std_logic_vector (15 downto 0); --Output from the ADC 
+SIGNAL daddr_in      : std_logic_vector(6 downto 0);
+SIGNAL eoc_out       : std_logic;
+SIGNAL drdy_out      : std_logic;
+SIGNAL alarm_out     : std_logic;
+SIGNAL eos_out       : std_logic;
+SIGNAL busy_out      : std_logic;
+
+--Humid sensor signals
+SIGNAL ctrl_sig      : STD_LOGIC := '0'; --Control signal for m_led_out
+SIGNAL humid_dig_sig : std_logic_vector (9 downto 0);
+SIGNAL thup_sig       : std_logic_vector (9 downto 0); -- Treshold uppper limit inputted by switches on the board
+SIGNAL thdwn_sig      : std_logic_vector (9 downto 0); -- Treshold down/lower limit inputted by switches on the board
+--LCD characters for outputs
+SIGNAL thup_mil : std_logic_vector (9 downto 0);
+SIGNAL thup_cen : std_logic_vector (9 downto 0); 
+SIGNAL thup_dec : std_logic_vector (9 downto 0); 
+SIGNAL thup_uni : std_logic_vector (9 downto 0);
+SIGNAL thdwn_mil : std_logic_vector (9 downto 0);
+SIGNAL thdwn_cen : std_logic_vector (9 downto 0); 
+SIGNAL thdwn_dec : std_logic_vector (9 downto 0); 
+SIGNAL thdwn_uni : std_logic_vector (9 downto 0);  
+SIGNAL humid_mil : std_logic_vector (9 downto 0);
+SIGNAL humid_cen : std_logic_vector (9 downto 0); 
+SIGNAL humid_dec : std_logic_vector (9 downto 0); 
+SIGNAL humid_uni : std_logic_vector (9 downto 0);    
+SIGNAL char_a : std_logic_vector (9 downto 0);
+SIGNAL char_b : std_logic_vector (9 downto 0);
+SIGNAL char_c : std_logic_vector (9 downto 0);
+
+
+COMPONENT lcd_controller IS
+    PORT(
+       clk        : IN  STD_LOGIC; --system clock
+       reset_n    : IN  STD_LOGIC; --active low reinitializes lcd
+       lcd_enable : IN  STD_LOGIC; --latches data into lcd controller
+       lcd_bus    : IN  STD_LOGIC_VECTOR(9 DOWNTO 0); --data and control signals
+       busy       : OUT STD_LOGIC; --lcd controller busy/idle feedback
+       rw, rs, e  : OUT STD_LOGIC; --read/write, setup/data, and enable for lcd
+       lcd_data   : OUT STD_LOGIC_VECTOR(7 DOWNTO 0)); --data signals for lcd
+END COMPONENT;
+
+COMPONENT asciiLUT IS
+      PORT ( databus_in : in std_logic_vector (9 downto 0); --10 bit input
+             --2 extra bits at the beginning for easier LCD input
+             databus_mil_out : out std_logic_vector (9 downto 0); --Ascii value representing the values in the thousands range
+             databus_cen_out : out std_logic_vector (9 downto 0); --Ascii value representing the values in the hundreds range
+             databus_dec_out : out std_logic_vector (9 downto 0); --Ascii value representing the values in the tens range
+             databus_uni_out : out std_logic_vector (9 downto 0) --Ascii value representing the values in the units range
+            );
+END COMPONENT;
+
+
+COMPONENT Humid_sensor
+  PORT (
+    di_in : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
+    daddr_in : IN STD_LOGIC_VECTOR(6 DOWNTO 0);
+    den_in : IN STD_LOGIC;
+    dwe_in : IN STD_LOGIC;
+    drdy_out : OUT STD_LOGIC;
+    do_out : OUT STD_LOGIC_VECTOR(15 DOWNTO 0);
+    dclk_in : IN STD_LOGIC;
+    reset_in : IN STD_LOGIC;
+    vp_in : IN STD_LOGIC;
+    vn_in : IN STD_LOGIC;
+    vauxp3 : IN STD_LOGIC;
+    vauxn3 : IN STD_LOGIC;
+    channel_out : OUT STD_LOGIC_VECTOR(4 DOWNTO 0);
+    eoc_out : OUT STD_LOGIC;
+    alarm_out : OUT STD_LOGIC;
+    eos_out : OUT STD_LOGIC;
+    busy_out : OUT STD_LOGIC
+  );
+END COMPONENT;
+
+begin
+
+daddr_in <= "00" & channel_out;
+humid_dig_sig <= do_out(9 downto 0);
+m_led_out <= ctrl_sig; --m_led_out functions just as ctrl_sig. Can probably eliminate ctrl_sig and use m_led_out on the process
+
+--ON/OFF character set, ON if ctrl_sig turns on
+char_a <= "1001001111";
+
+char_b <= "1001001110" when ctrl_sig = '1' else
+"1001000110";
+
+char_c <= "1000100000" when ctrl_sig = '1' else
+"1001000110";
+
+--ctrl signal
+process(clk) --ctrl signal turns on only when the lower treshold is met, and only turns off once the upper treshold is met. 
+begin
+    if humid_dig_sig < thdwn_sig then
+        ctrl_sig <= '1';
+    elsif humid_dig_sig > thup_sig then
+        ctrl_sig <= '0';
+end if;
+end process;
+
+--editable set button
+process(clk)
+begin
+    if updown = '1' and th_set_but = '1' then --if updown is active and the set button is pressed, then the value on the switches in saved under thup_sig
+        thup_sig <= th_set_swt;
+    elsif updown = '0' and th_set_but = '1' then --if updown is active and the set button is pressed, then the value on the switches in saved under thdwn_sig
+        thdwn_sig <= th_set_swt;
+end if;   
+end process;
+
+--LCD output
+PROCESS(clk)
+    VARIABLE char  :  INTEGER RANGE 0 TO 37 := 0;
+  BEGIN
+
+    if(clk'EVENT AND clk = '1') THEN
+      IF(lcd_busy = '0' AND lcd_enable = '0') THEN
+        lcd_enable <= '1';
+			
+                IF(char < 38) THEN
+				char := char + 1;
+				END IF;
+				CASE char IS
+					WHEN 1 => lcd_bus <= "1001001100"; --L
+					WHEN 2 => lcd_bus <= "1001101001"; --i
+					WHEN 3 => lcd_bus <= "1001101101"; --m
+					WHEN 4 => lcd_bus <= "1001100100"; --
+					WHEN 5 => lcd_bus <= "1001110011"; --s
+					WHEN 6 => lcd_bus <= "1001110101"; --u
+					WHEN 7 => lcd_bus <= "1001110000"; --p
+					WHEN 8 => lcd_bus <= "1000101111"; --/
+				    WHEN 9 => lcd_bus <= "1001101001"; --i
+					WHEN 10 => lcd_bus <= "1001101110"; --n
+					WHEN 11 => lcd_bus <= "1001100110"; --f
+					WHEN 12 => lcd_bus <= "1001100100"; --
+					WHEN 13 => lcd_bus <= "1001100100"; --
+					WHEN 14 => lcd_bus <= "1001001000"; --H
+					WHEN 15 => lcd_bus <= "1001110101"; --u
+					WHEN 16 => lcd_bus <= "1001101101"; --m
+					WHEN 17 => lcd_bus <= "0011000000"; --Ir a direccion 64, bajar de linea
+					WHEN 18 => lcd_bus <= thup_mil; 
+                    WHEN 19 => lcd_bus <= thup_cen; 
+                    WHEN 20 => lcd_bus <= thup_dec; 
+                    WHEN 21 => lcd_bus <= thup_uni;
+                    WHEN 22 => lcd_bus <= "1000101111"; --/
+                    WHEN 23 => lcd_bus <= thdwn_mil; 
+                    WHEN 24 => lcd_bus <= thdwn_cen; 
+                    WHEN 25 => lcd_bus <= thdwn_dec; 
+                    WHEN 26 => lcd_bus <= thdwn_uni;
+                    WHEN 27 => lcd_bus <= "1001100100"; --
+                    WHEN 28 => lcd_bus <= "1001100100"; --
+                    WHEN 29 => lcd_bus <= humid_mil;
+                    WHEN 30 => lcd_bus <= humid_cen;
+                    WHEN 31 => lcd_bus <= humid_dec;
+                    WHEN 32 => lcd_bus <= humid_uni;
+                    WHEN 33 => lcd_bus <= "1001100100"; --
+                    WHEN 34 => lcd_bus <= "1001100100"; --
+                    WHEN 35 => lcd_bus <= char_a;
+                    WHEN 36 => lcd_bus <= char_b;
+                    WHEN 37 => lcd_bus <= char_c;
+
+					WHEN OTHERS => lcd_enable <= '0';
+				END CASE;						
+      else
+        lcd_enable <= '0';
+        end if;
+      end if;
+   
+  end process;
+
+LCD : lcd_controller PORT MAP(clk => clk, reset_n => reset, lcd_enable => lcd_enable, lcd_bus => lcd_bus, 
+                              busy => lcd_busy, rw => rw, rs => rs, e => e, lcd_data => lcd_data);
+
+thup_ascii : asciiLUT port map (thup_sig, thup_mil, thup_cen, thup_dec, thup_uni);
+thdwn_ascii : asciiLUT port map (thdwn_sig, thdwn_mil, thdwn_cen, thdwn_dec, thdwn_uni);
+humid_ascii : asciiLUT port map (humid_dig_sig, humid_mil, humid_cen, humid_dec, humid_uni); 
+                              
+Hum_ADC : Humid_sensor
+  PORT MAP (
+    di_in => x"0000", --Input data bus for the dynamic reconfiguration port (DRP).
+    daddr_in => daddr_in, --Address bus for the dynamic reconfiguration port.
+    den_in => eoc_out, --Enable signal for the dynamic reconfiguration port.
+    dwe_in => '0', --Write enable for the dynamic reconfiguration port.
+    drdy_out => drdy_out, --Data ready signal for the dynamic reconfiguration port.
+    do_out => do_out, --Output data bus for the dynamic reconfiguration port.
+    dclk_in => clk, --Clock input for the dynamic reconfiguration port
+    reset_in => reset, --Reset signal for the XADC control logic and maximum/minimum registers
+    vp_in => '0', --One dedicated analog-input pair. The XADC has one pair of dedicated analog-input pins that provide a differential analog input.
+    vn_in => '0', --One dedicated analog-input pair. The XADC has one pair of dedicated analog-input pins that provide a differential analog input.
+    vauxp3 => hum_in, --16 auxiliary analog-input pairs. Also, the XADC uses 16 differential digital-input pairs as low-bandwidth differential analog inputs.
+    vauxn3 => '0', --These inputs are configured as analog during FPGA configuration.
+    channel_out => channel_out, --Channel selection outputs. The ADC input MUX channel selection for the current ADC conversion is placed on these outputs at the end of an ADC conversion.
+    eoc_out => eoc_out, --End of Conversion signal. This signal transitions to an active-High at the end of an ADC conversion when the measurement result is written to the Status registers.
+    alarm_out => alarm_out, --Logic OR of alarms. Can be used to flag occurrence of any alarm
+    eos_out => eos_out, --End of Sequence. This signal transitions to an active-High when the measurement data from the last channel in the Channel Sequencer is written to the Status registers.
+    busy_out => busy_out --ADC busy signal. This signal transitions High during an ADC conversion.
+  );
+
+end Behavioral;
