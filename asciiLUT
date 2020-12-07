@@ -1,0 +1,116 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+
+-- Uncomment the following library declaration if using
+-- arithmetic functions with Signed or Unsigned values
+use IEEE.NUMERIC_STD.ALL;
+
+-- Uncomment the following library declaration if instantiating
+-- any Xilinx leaf cells in this code.
+--library UNISIM;
+--use UNISIM.VComponents.all;
+
+entity asciiLUT is
+      Port ( databus_in : in std_logic_vector (9 downto 0); --10 bit input
+             --2 extra bits at the beginning for easier LCD input
+             databus_mil_out : out std_logic_vector (9 downto 0); --Ascii value representing the values in the thousands range
+             databus_cen_out : out std_logic_vector (9 downto 0); --Ascii value representing the values in the hundreds range
+             databus_dec_out : out std_logic_vector (9 downto 0); --Ascii value representing the values in the tens range
+             databus_uni_out : out std_logic_vector (9 downto 0) --Ascii value representing the values in the units range
+            );
+end asciiLUT;
+
+architecture Behavioral of asciiLUT is
+component bin2ascii 
+port (
+      data_in : in std_logic_vector (3 downto 0);
+      data_out : out std_logic_vector (9 downto 0)
+      );
+end component;
+
+signal databus_integer : integer;
+signal databus_mil : std_logic_vector (3 downto 0);
+signal databus_cen : std_logic_vector (3 downto 0); 
+signal databus_dec : std_logic_vector (3 downto 0); 
+signal databus_uni : std_logic_vector (3 downto 0);  
+
+begin
+
+databus_integer <= to_integer(unsigned(databus_in));
+
+databus_mil <= x"1" when databus_integer >= 1000 else
+x"0";
+
+databus_cen <= x"9" when databus_integer >= 900 else
+x"8" when databus_integer >= 800 else
+x"7" when databus_integer >= 700 else
+x"6" when databus_integer >= 600 else
+x"5" when databus_integer >= 500 else
+x"4" when databus_integer >= 400 else
+x"3" when databus_integer >= 300 else
+x"2" when databus_integer >= 200 else
+x"1" when databus_integer >= 100 else
+x"0";
+
+databus_dec <= x"9" when databus_integer >= 90 else
+x"8" when databus_integer >= 80 else
+x"7" when databus_integer >= 70 else
+x"6" when databus_integer >= 60 else
+x"5" when databus_integer >= 50 else
+x"4" when databus_integer >= 40 else
+x"3" when databus_integer >= 30 else
+x"2" when databus_integer >= 20 else
+x"1" when databus_integer >= 10 else
+x"0";
+
+databus_uni <= x"9" when databus_integer >= 9 else
+x"8" when databus_integer >= 8 else
+x"7" when databus_integer >= 7 else
+x"6" when databus_integer >= 6 else
+x"5" when databus_integer >= 5 else
+x"4" when databus_integer >= 4 else
+x"3" when databus_integer >= 3 else
+x"2" when databus_integer >= 2 else
+x"1" when databus_integer >= 1 else
+x"0";
+
+mil : bin2ascii port map (databus_mil, databus_mil_out);
+cen : bin2ascii port map (databus_mil, databus_cen_out);
+dec : bin2ascii port map (databus_mil, databus_dec_out);
+uni : bin2ascii port map (databus_mil, databus_uni_out);
+
+
+end Behavioral;
+
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+
+entity bin2ascii is
+port (
+      data_in : in std_logic_vector (3 downto 0);
+      data_out : out std_logic_vector (9 downto 0)
+      );
+end bin2ascii;
+
+architecture Behavioral of bin2ascii is
+begin   
+    process(data_in)
+    begin
+        case(data_in) is
+            when "0000" =>  data_out <= "1000110000"; --0
+            when "0001" =>  data_out <= "1000110001"; --1
+            when "0010" =>  data_out <= "1000110010"; --2
+            when "0011" =>  data_out <= "1000110011"; --3
+            when "0100" =>  data_out <= "1000110100"; --4
+            when "0101" =>  data_out <= "1000110101"; --5
+            when "0110" =>  data_out <= "1000110110"; --6
+            when "0111" =>  data_out <= "1000110111"; --7
+            when "1000" =>  data_out <= "1000111000"; --8
+            when "1001" =>  data_out <= "1000111001"; --9
+            when others =>  data_out <= "1000110000";
+            end case;
+end process;
+end behavioral;
+
+
